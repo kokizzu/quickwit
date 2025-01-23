@@ -138,6 +138,6 @@ Congratz! You finished this tutorial! You can level up with the following tutori
 
 ## Next steps
 
-- [Advanced Lambda tutorial](tutorial-aws-lambda.md) which covers an end-to-end use cases
-- [Search REST API](/docs/reference/rest-api)
-- [Query language](/docs/reference/query-language)
+- [Search log service on AWS](/blog/log-search-service-for-under-7-dollars) which covers an end-to-end use case.
+- [Search REST API](../../reference/rest-api)
+- [Query language](../../reference/query-language)

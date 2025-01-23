@@ -1,0 +1,56 @@
+// Copyright 2021-Present Datadog, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+
+package quickwit.cluster;
+
+message ChitchatId {
+  string node_id = 1;
+  uint64 generation_id = 2;
+  string gossip_advertise_addr = 3;
+}
+
+enum DeletionStatus {
+    Set = 0;
+    Deleted = 1;
+    DeleteAfterTtl = 2;
+}
+
+message VersionedKeyValue {
+  string key = 1;
+  string value = 2;
+  uint64 version = 3;
+  DeletionStatus status = 4;
+}
+
+message NodeState {
+  ChitchatId chitchat_id = 1;
+  repeated VersionedKeyValue key_values = 2;
+  uint64 max_version = 3;
+  uint64 last_gc_version = 4;
+}
+
+service ClusterService {
+  rpc FetchClusterState(FetchClusterStateRequest) returns (FetchClusterStateResponse);
+}
+
+message FetchClusterStateRequest {
+  string cluster_id = 1;
+}
+
+message FetchClusterStateResponse {
+  string cluster_id = 1;
+  repeated NodeState node_states = 2;
+}

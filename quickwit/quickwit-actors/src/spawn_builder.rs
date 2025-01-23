@@ -1,21 +1,18 @@
-// Copyright (C) 2024 Quickwit, Inc.
+// Copyright 2021-Present Datadog, Inc.
 //
-// Quickwit is offered under the AGPL v3.0 and as commercial software.
-// For commercial licensing, contact us at hello@quickwit.io.
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
 //
-// AGPL:
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as
-// published by the Free Software Foundation, either version 3 of the
-// License, or (at your option) any later version.
+//     http://www.apache.org/licenses/LICENSE-2.0
 //
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program. If not, see <http://www.gnu.org/licenses/>.
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+use std::time::Duration;
 
 use anyhow::Context;
 use quickwit_common::metrics::IntCounter;
@@ -70,6 +67,20 @@ impl SpawnContext {
             kill_switch: self.kill_switch.child(),
             registry: self.registry.clone(),
         }
+    }
+
+    /// Schedules a new event.
+    /// Once `timeout` is elapsed, the future `fut` is
+    /// executed.
+    ///
+    /// `fut` will be executed in the scheduler task, so it is
+    /// required to be short.
+    pub fn schedule_event<F: FnOnce() + Send + Sync + 'static>(
+        &self,
+        callback: F,
+        timeout: Duration,
+    ) {
+        self.scheduler_client.schedule_event(callback, timeout)
     }
 }
 
@@ -165,7 +176,11 @@ impl<A: Actor> SpawnBuilder<A> {
         let ctx_clone = ctx.clone();
         let loop_async_actor_future =
             async move { actor_loop(actor, inbox, no_advance_time_guard, ctx).await };
-        let join_handle = ActorJoinHandle::new(runtime_handle.spawn(loop_async_actor_future));
+        let join_handle = ActorJoinHandle::new(quickwit_common::spawn_named_task_on(
+            loop_async_actor_future,
+            std::any::type_name::<A>(),
+            &runtime_handle,
+        ));
         ctx_clone.registry().register(&mailbox, join_handle.clone());
         let actor_handle = ActorHandle::new(state_rx, join_handle, ctx_clone);
         (mailbox, actor_handle)
@@ -220,14 +235,8 @@ async fn recv_envelope<A: Actor>(inbox: &mut Inbox<A>, ctx: &ActorContext<A>) ->
     }
 }
 
-fn try_recv_envelope<A: Actor>(inbox: &mut Inbox<A>, ctx: &ActorContext<A>) -> Option<Envelope<A>> {
-    if ctx.state().is_running() {
-        inbox.try_recv()
-    } else {
-        // The actor is paused. We only process command and scheduled message.
-        inbox.try_recv_cmd_and_scheduled_msg_only()
-    }
-    .ok()
+fn try_recv_envelope<A: Actor>(inbox: &mut Inbox<A>) -> Option<Envelope<A>> {
+    inbox.try_recv().ok()
 }
 
 struct ActorExecutionEnv<A: Actor> {
@@ -278,19 +287,25 @@ impl<A: Actor> ActorExecutionEnv<A> {
     async fn process_all_available_messages(&mut self) -> Result<(), ActorExitStatus> {
         self.yield_and_check_if_killed().await?;
         let envelope = recv_envelope(&mut self.inbox, &self.ctx).await;
-        self.ctx.process();
         self.process_one_message(envelope).await?;
-        loop {
-            while let Some(envelope) = try_recv_envelope(&mut self.inbox, &self.ctx) {
-                self.process_one_message(envelope).await?;
+        // If the actor is Running (not Paused), we consume all the messages in the mailbox
+        // and call `on_drained_message`.
+        if self.ctx.state().is_running() {
+            loop {
+                while let Some(envelope) = try_recv_envelope(&mut self.inbox) {
+                    self.process_one_message(envelope).await?;
+                }
+                // We have reached the last message.
+                // Let's still yield and see if we have more messages:
+                // an upstream actor might have experienced backpressure, and is now waiting for our
+                // mailbox to have some room.
+                self.ctx.yield_now().await;
+                if self.inbox.is_empty() {
+                    break;
+                }
             }
-            self.ctx.yield_now().await;
-            if self.inbox.is_empty() {
-                break;
-            }
+            self.actor.get_mut().on_drained_messages(&self.ctx).await?;
         }
-        self.actor.get_mut().on_drained_messages(&self.ctx).await?;
-        self.ctx.idle();
         if self.ctx.mailbox().is_last_mailbox() {
             // We double check here that the mailbox does not contain any messages,
             // as someone on different runtime thread could have added a last message

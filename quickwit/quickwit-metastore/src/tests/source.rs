@@ -1,21 +1,16 @@
-// Copyright (C) 2024 Quickwit, Inc.
+// Copyright 2021-Present Datadog, Inc.
 //
-// Quickwit is offered under the AGPL v3.0 and as commercial software.
-// For commercial licensing, contact us at hello@quickwit.io.
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
 //
-// AGPL:
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as
-// published by the Free Software Foundation, either version 3 of the
-// License, or (at your option) any later version.
+//     http://www.apache.org/licenses/LICENSE-2.0
 //
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program. If not, see <http://www.gnu.org/licenses/>.
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 use std::num::NonZeroUsize;
 
@@ -43,21 +38,19 @@ pub async fn test_metastore_add_source<MetastoreToTest: MetastoreServiceExt + De
     let index_uri = format!("ram:///indexes/{index_id}");
     let index_config = IndexConfig::for_test(&index_id, &index_uri);
 
-    let create_index_request =
-        CreateIndexRequest::try_from_index_config(index_config.clone()).unwrap();
+    let create_index_request = CreateIndexRequest::try_from_index_config(&index_config).unwrap();
     let index_uid: IndexUid = metastore
         .create_index(create_index_request)
         .await
         .unwrap()
-        .index_uid
-        .into();
+        .index_uid()
+        .clone();
 
     let source_id = format!("{index_id}--source");
 
     let source = SourceConfig {
         source_id: source_id.to_string(),
-        max_num_pipelines_per_indexer: NonZeroUsize::new(1).unwrap(),
-        desired_num_pipelines: NonZeroUsize::new(1).unwrap(),
+        num_pipelines: NonZeroUsize::new(1).unwrap(),
         enabled: true,
         source_params: SourceParams::void(),
         transform_config: None,
@@ -77,7 +70,7 @@ pub async fn test_metastore_add_source<MetastoreToTest: MetastoreServiceExt + De
     );
 
     let add_source_request =
-        AddSourceRequest::try_from_source_config(index_uid.clone(), source.clone()).unwrap();
+        AddSourceRequest::try_from_source_config(index_uid.clone(), &source).unwrap();
     metastore.add_source(add_source_request).await.unwrap();
 
     let index_metadata = metastore
@@ -103,8 +96,7 @@ pub async fn test_metastore_add_source<MetastoreToTest: MetastoreServiceExt + De
     assert!(matches!(
         metastore
             .add_source(
-                AddSourceRequest::try_from_source_config(index_uid.clone(), source.clone())
-                    .unwrap()
+                AddSourceRequest::try_from_source_config(index_uid.clone(), &source).unwrap()
             )
             .await
             .unwrap_err(),
@@ -115,7 +107,7 @@ pub async fn test_metastore_add_source<MetastoreToTest: MetastoreServiceExt + De
             .add_source(
                 AddSourceRequest::try_from_source_config(
                     IndexUid::new_with_random_ulid("index-not-found"),
-                    source.clone()
+                    &source
                 )
                 .unwrap()
             )
@@ -128,7 +120,7 @@ pub async fn test_metastore_add_source<MetastoreToTest: MetastoreServiceExt + De
             .add_source(
                 AddSourceRequest::try_from_source_config(
                     IndexUid::new_with_random_ulid(&index_id),
-                    source
+                    &source
                 )
                 .unwrap()
             )
@@ -146,27 +138,25 @@ pub async fn test_metastore_toggle_source<MetastoreToTest: MetastoreServiceExt +
     let index_uri = format!("ram:///indexes/{index_id}");
     let index_config = IndexConfig::for_test(&index_id, &index_uri);
 
-    let create_index_request =
-        CreateIndexRequest::try_from_index_config(index_config.clone()).unwrap();
+    let create_index_request = CreateIndexRequest::try_from_index_config(&index_config).unwrap();
     let index_uid: IndexUid = metastore
         .create_index(create_index_request)
         .await
         .unwrap()
-        .index_uid
-        .into();
+        .index_uid()
+        .clone();
 
     let source_id = format!("{index_id}--source");
     let source = SourceConfig {
         source_id: source_id.to_string(),
-        max_num_pipelines_per_indexer: NonZeroUsize::new(1).unwrap(),
-        desired_num_pipelines: NonZeroUsize::new(1).unwrap(),
+        num_pipelines: NonZeroUsize::new(1).unwrap(),
         enabled: true,
         source_params: SourceParams::void(),
         transform_config: None,
         input_format: SourceInputFormat::Json,
     };
     let add_source_request =
-        AddSourceRequest::try_from_source_config(index_uid.clone(), source.clone()).unwrap();
+        AddSourceRequest::try_from_source_config(index_uid.clone(), &source).unwrap();
     metastore.add_source(add_source_request).await.unwrap();
     let index_metadata = metastore
         .index_metadata(IndexMetadataRequest::for_index_id(index_id.to_string()))
@@ -225,8 +215,7 @@ pub async fn test_metastore_delete_source<MetastoreToTest: MetastoreServiceExt +
 
     let source = SourceConfig {
         source_id: source_id.to_string(),
-        max_num_pipelines_per_indexer: NonZeroUsize::new(1).unwrap(),
-        desired_num_pipelines: NonZeroUsize::new(1).unwrap(),
+        num_pipelines: NonZeroUsize::new(1).unwrap(),
         enabled: true,
         source_params: SourceParams::void(),
         transform_config: None,
@@ -235,20 +224,19 @@ pub async fn test_metastore_delete_source<MetastoreToTest: MetastoreServiceExt +
 
     let index_config = IndexConfig::for_test(&index_id, index_uri.as_str());
 
-    let create_index_request =
-        CreateIndexRequest::try_from_index_config(index_config.clone()).unwrap();
+    let create_index_request = CreateIndexRequest::try_from_index_config(&index_config).unwrap();
     let index_uid: IndexUid = metastore
         .create_index(create_index_request)
         .await
         .unwrap()
-        .index_uid
-        .into();
+        .index_uid()
+        .clone();
     assert!(matches!(
         metastore
             .add_source(
                 AddSourceRequest::try_from_source_config(
                     IndexUid::new_with_random_ulid("index-not-found"),
-                    source.clone()
+                    &source
                 )
                 .unwrap()
             )
@@ -261,7 +249,7 @@ pub async fn test_metastore_delete_source<MetastoreToTest: MetastoreServiceExt +
             .add_source(
                 AddSourceRequest::try_from_source_config(
                     IndexUid::new_with_random_ulid(&index_id),
-                    source.clone()
+                    &source
                 )
                 .unwrap()
             )
@@ -271,9 +259,7 @@ pub async fn test_metastore_delete_source<MetastoreToTest: MetastoreServiceExt +
     ));
 
     metastore
-        .add_source(
-            AddSourceRequest::try_from_source_config(index_uid.clone(), source.clone()).unwrap(),
-        )
+        .add_source(AddSourceRequest::try_from_source_config(index_uid.clone(), &source).unwrap())
         .await
         .unwrap();
     metastore
@@ -306,7 +292,7 @@ pub async fn test_metastore_delete_source<MetastoreToTest: MetastoreServiceExt +
     assert!(matches!(
         metastore
             .delete_source(DeleteSourceRequest {
-                index_uid: IndexUid::new_with_random_ulid("index-not-found").to_string(),
+                index_uid: Some(IndexUid::new_with_random_ulid("index-not-found")),
                 source_id: source_id.to_string()
             })
             .await
@@ -316,7 +302,7 @@ pub async fn test_metastore_delete_source<MetastoreToTest: MetastoreServiceExt +
     assert!(matches!(
         metastore
             .delete_source(DeleteSourceRequest {
-                index_uid: IndexUid::new_with_random_ulid(&index_id).to_string(),
+                index_uid: Some(IndexUid::new_with_random_ulid(&index_id)),
                 source_id: source_id.to_string()
             })
             .await
@@ -336,14 +322,13 @@ pub async fn test_metastore_reset_checkpoint<
     let index_uri = format!("ram:///indexes/{index_id}");
     let index_config = IndexConfig::for_test(&index_id, &index_uri);
 
-    let create_index_request =
-        CreateIndexRequest::try_from_index_config(index_config.clone()).unwrap();
+    let create_index_request = CreateIndexRequest::try_from_index_config(&index_config).unwrap();
     let index_uid: IndexUid = metastore
         .create_index(create_index_request)
         .await
         .unwrap()
-        .index_uid
-        .into();
+        .index_uid()
+        .clone();
 
     let source_ids: Vec<String> = (0..2).map(|i| format!("{index_id}--source-{i}")).collect();
     let split_ids: Vec<String> = (0..2).map(|i| format!("{index_id}--split-{i}")).collect();
@@ -351,8 +336,7 @@ pub async fn test_metastore_reset_checkpoint<
     for (source_id, split_id) in source_ids.iter().zip(split_ids.iter()) {
         let source = SourceConfig {
             source_id: source_id.clone(),
-            max_num_pipelines_per_indexer: NonZeroUsize::new(1).unwrap(),
-            desired_num_pipelines: NonZeroUsize::new(1).unwrap(),
+            num_pipelines: NonZeroUsize::new(1).unwrap(),
             enabled: true,
             source_params: SourceParams::void(),
             transform_config: None,
@@ -360,8 +344,7 @@ pub async fn test_metastore_reset_checkpoint<
         };
         metastore
             .add_source(
-                AddSourceRequest::try_from_source_config(index_uid.clone(), source.clone())
-                    .unwrap(),
+                AddSourceRequest::try_from_source_config(index_uid.clone(), &source).unwrap(),
             )
             .await
             .unwrap();
@@ -372,10 +355,11 @@ pub async fn test_metastore_reset_checkpoint<
             ..Default::default()
         };
         let stage_splits_request =
-            StageSplitsRequest::try_from_split_metadata(index_uid.clone(), split_metadata).unwrap();
+            StageSplitsRequest::try_from_split_metadata(index_uid.clone(), &split_metadata)
+                .unwrap();
         metastore.stage_splits(stage_splits_request).await.unwrap();
         let publish_splits_request = PublishSplitsRequest {
-            index_uid: index_uid.clone().to_string(),
+            index_uid: Some(index_uid.clone()),
             staged_split_ids: vec![split_id.clone()],
             ..Default::default()
         };
@@ -420,7 +404,7 @@ pub async fn test_metastore_reset_checkpoint<
     assert!(matches!(
         metastore
             .reset_source_checkpoint(ResetSourceCheckpointRequest {
-                index_uid: IndexUid::new_with_random_ulid("index-not-found").to_string(),
+                index_uid: Some(IndexUid::new_with_random_ulid("index-not-found")),
                 source_id: source_ids[1].clone(),
             })
             .await
@@ -431,7 +415,7 @@ pub async fn test_metastore_reset_checkpoint<
     assert!(matches!(
         metastore
             .reset_source_checkpoint(ResetSourceCheckpointRequest {
-                index_uid: IndexUid::new_with_random_ulid(&index_id).to_string(),
+                index_uid: Some(IndexUid::new_with_random_ulid(&index_id)),
                 source_id: source_ids[1].to_string(),
             })
             .await

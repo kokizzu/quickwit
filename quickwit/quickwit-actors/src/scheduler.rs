@@ -1,21 +1,16 @@
-// Copyright (C) 2024 Quickwit, Inc.
+// Copyright 2021-Present Datadog, Inc.
 //
-// Quickwit is offered under the AGPL v3.0 and as commercial software.
-// For commercial licensing, contact us at hello@quickwit.io.
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
 //
-// AGPL:
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as
-// published by the Free Software Foundation, either version 3 of the
-// License, or (at your option) any later version.
+//     http://www.apache.org/licenses/LICENSE-2.0
 //
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program. If not, see <http://www.gnu.org/licenses/>.
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 use std::cmp::Reverse;
 use std::collections::binary_heap::PeekMut;
@@ -25,6 +20,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
+use quickwit_common::spawn_named_task;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
@@ -203,16 +199,19 @@ pub fn start_scheduler() -> SchedulerClient {
         }),
     };
     let mut scheduler = Scheduler::new(&scheduler_client);
-    tokio::spawn(async move {
-        while let Ok(scheduler_message) = rx.recv_async().await {
-            match scheduler_message {
-                SchedulerMessage::ProcessTime => scheduler.process_time(),
-                SchedulerMessage::Schedule { callback, timeout } => {
-                    scheduler.process_schedule(callback, timeout);
+    spawn_named_task(
+        async move {
+            while let Ok(scheduler_message) = rx.recv_async().await {
+                match scheduler_message {
+                    SchedulerMessage::ProcessTime => scheduler.process_time(),
+                    SchedulerMessage::Schedule { callback, timeout } => {
+                        scheduler.process_schedule(callback, timeout);
+                    }
                 }
             }
-        }
-    });
+        },
+        "scheduler",
+    );
     scheduler_client
 }
 
@@ -319,10 +318,9 @@ impl Scheduler {
     /// Updates the simulated time shift, if appropriate.
     ///
     /// We advance time if:
-    /// - someone is actually requesting for a simulated fast forward in time.
-    /// (if Universe::simulate_time_shift(..) has been called).
-    /// - no message is queued for processing, no initialize or no finalize
-    /// is being processed.
+    /// - someone is actually requesting for a simulated fast forward in time. (if
+    ///   Universe::simulate_time_shift(..) has been called).
+    /// - no message is queued for processing, no initialize or no finalize is being processed.
     fn advance_time_if_necessary(&mut self) {
         let Some(scheduler_client) = self.scheduler_client() else {
             return;

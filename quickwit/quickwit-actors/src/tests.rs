@@ -1,21 +1,16 @@
-// Copyright (C) 2024 Quickwit, Inc.
+// Copyright 2021-Present Datadog, Inc.
 //
-// Quickwit is offered under the AGPL v3.0 and as commercial software.
-// For commercial licensing, contact us at hello@quickwit.io.
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
 //
-// AGPL:
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as
-// published by the Free Software Foundation, either version 3 of the
-// License, or (at your option) any later version.
+//     http://www.apache.org/licenses/LICENSE-2.0
 //
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program. If not, see <http://www.gnu.org/licenses/>.
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -23,6 +18,7 @@ use std::ops::Mul;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use quickwit_common::new_coolid;
 use serde::Serialize;
 
 use crate::observation::ObservationType;
@@ -62,7 +58,7 @@ impl Handler<Ping> for PingReceiverActor {
         ctx: &ActorContext<Self>,
     ) -> Result<(), ActorExitStatus> {
         self.ping_count += 1;
-        assert_eq!(ctx.state(), ActorState::Processing);
+        assert_eq!(ctx.state(), ActorState::Running);
         Ok(())
     }
 }
@@ -316,14 +312,14 @@ async fn test_actor_running_states() {
     quickwit_common::setup_logging_for_tests();
     let universe = Universe::with_accelerated_time();
     let (ping_mailbox, ping_handle) = universe.spawn_builder().spawn(PingReceiverActor::default());
-    assert!(ping_handle.state() == ActorState::Processing);
+    assert_eq!(ping_handle.state(), ActorState::Running);
     for _ in 0u32..10u32 {
         assert!(ping_mailbox.send_message(Ping).await.is_ok());
     }
     let obs = ping_handle.process_pending_and_observe().await;
     assert_eq!(*obs, 10);
     universe.sleep(Duration::from_millis(1)).await;
-    assert!(ping_handle.state() == ActorState::Idle);
+    assert_eq!(ping_handle.state(), ActorState::Running);
     universe.assert_quit().await;
 }
 
@@ -505,7 +501,7 @@ impl Actor for BuggyFinalizeActor {
 async fn test_actor_finalize_error_set_exit_status_to_panicked() -> anyhow::Result<()> {
     let universe = Universe::with_accelerated_time();
     let (mailbox, handle) = universe.spawn_builder().spawn(BuggyFinalizeActor);
-    assert!(matches!(handle.state(), ActorState::Processing));
+    assert!(matches!(handle.state(), ActorState::Running));
     drop(mailbox);
     let (exit, _) = handle.join().await;
     assert!(matches!(exit, ActorExitStatus::Panicked));
@@ -543,9 +539,6 @@ impl Handler<AddOperand> for Adder {
         Ok(self.0)
     }
 }
-
-#[derive(Debug)]
-struct Sleep(Duration);
 
 #[tokio::test]
 async fn test_actor_return_response() -> anyhow::Result<()> {
@@ -723,5 +716,51 @@ async fn test_unsync_actor_message() {
     let response_rx = mailbox.try_send_message(Cell::new(1)).unwrap();
     assert_eq!(response_rx.await.unwrap().unwrap(), 5);
 
+    universe.assert_quit().await;
+}
+
+struct FakeActorService {
+    // We use a cool id to make sure in the test that we get twice the same instance.
+    cool_id: String,
+}
+
+#[derive(Debug)]
+struct GetCoolId;
+
+impl Actor for FakeActorService {
+    type ObservableState = ();
+
+    fn observable_state(&self) {}
+}
+
+#[async_trait]
+impl Handler<GetCoolId> for FakeActorService {
+    type Reply = String;
+
+    async fn handle(
+        &mut self,
+        _: GetCoolId,
+        _ctx: &ActorContext<Self>,
+    ) -> Result<Self::Reply, ActorExitStatus> {
+        Ok(self.cool_id.clone())
+    }
+}
+
+impl Default for FakeActorService {
+    fn default() -> Self {
+        FakeActorService {
+            cool_id: new_coolid("fake-actor"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_get_or_spawn() {
+    let universe = Universe::new();
+    let mailbox1: Mailbox<FakeActorService> = universe.get_or_spawn_one();
+    let id1 = mailbox1.ask(GetCoolId).await.unwrap();
+    let mailbox2: Mailbox<FakeActorService> = universe.get_or_spawn_one();
+    let id2 = mailbox2.ask(GetCoolId).await.unwrap();
+    assert_eq!(id1, id2);
     universe.assert_quit().await;
 }

@@ -1,21 +1,16 @@
-// Copyright (C) 2024 Quickwit, Inc.
+// Copyright 2021-Present Datadog, Inc.
 //
-// Quickwit is offered under the AGPL v3.0 and as commercial software.
-// For commercial licensing, contact us at hello@quickwit.io.
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
 //
-// AGPL:
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as
-// published by the Free Software Foundation, either version 3 of the
-// License, or (at your option) any later version.
+//     http://www.apache.org/licenses/LICENSE-2.0
 //
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program. If not, see <http://www.gnu.org/licenses/>.
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 // This file contains code copied from the Resource trait
 // in async-speed-limit from the TiKV project.
@@ -35,7 +30,8 @@ use std::time::Duration;
 
 use async_speed_limit::clock::StandardClock;
 use async_speed_limit::limiter::Consume;
-use async_speed_limit::Limiter;
+pub use async_speed_limit::Limiter;
+use bytesize::ByteSize;
 use once_cell::sync::Lazy;
 use pin_project::pin_project;
 use prometheus::IntCounter;
@@ -53,7 +49,7 @@ fn truncate_bytes(bytes: &[u8]) -> &[u8] {
 }
 
 struct IoMetrics {
-    write_bytes: IntCounterVec<2>,
+    write_bytes: IntCounterVec<1>,
 }
 
 impl Default for IoMetrics {
@@ -62,8 +58,9 @@ impl Default for IoMetrics {
             "write_bytes",
             "Number of bytes written by a given component in [indexer, merger, deleter, \
              split_downloader_{merge,delete}]",
-            "quickwit",
-            ["index", "component"],
+            "",
+            &[],
+            ["component"],
         );
         Self { write_bytes }
     }
@@ -85,9 +82,15 @@ const REFILL_DURATION: Duration = if cfg!(test) {
     Duration::from_millis(100)
 };
 
+pub fn limiter(throughput: ByteSize) -> Limiter {
+    Limiter::builder(throughput.as_u64() as f64)
+        .refill(REFILL_DURATION)
+        .build()
+}
+
 #[derive(Clone)]
 pub struct IoControls {
-    throughput_limiter: Limiter,
+    throughput_limiter_opt: Option<Limiter>,
     bytes_counter: IntCounter,
     progress: Progress,
     kill_switch: KillSwitch,
@@ -98,7 +101,7 @@ impl Default for IoControls {
         let default_bytes_counter =
             IntCounter::new("default_write_num_bytes", "Default write counter.").unwrap();
         IoControls {
-            throughput_limiter: Limiter::new(f64::INFINITY),
+            throughput_limiter_opt: None,
             progress: Progress::default(),
             kill_switch: KillSwitch::default(),
             bytes_counter: default_bytes_counter,
@@ -131,13 +134,20 @@ impl IoControls {
         Ok(guard)
     }
 
-    pub fn set_index_and_component(mut self, index: &str, component: &str) -> Self {
-        self.bytes_counter = IO_METRICS.write_bytes.with_label_values([index, component]);
+    pub fn set_component(mut self, component: &str) -> Self {
+        self.bytes_counter = IO_METRICS.write_bytes.with_label_values([component]);
         self
     }
 
-    pub fn set_throughput_limit(mut self, throughput: f64) -> Self {
-        self.throughput_limiter = Limiter::builder(throughput).refill(REFILL_DURATION).build();
+    pub fn set_throughput_limit(self, throughput: ByteSize) -> Self {
+        let throughput_limiter = Limiter::builder(throughput.as_u64() as f64)
+            .refill(REFILL_DURATION)
+            .build();
+        self.set_throughput_limiter_opt(Some(throughput_limiter))
+    }
+
+    pub fn set_throughput_limiter_opt(mut self, throughput_limiter_opt: Option<Limiter>) -> Self {
+        self.throughput_limiter_opt = throughput_limiter_opt;
         self
     }
 
@@ -157,7 +167,9 @@ impl IoControls {
     }
     fn consume_blocking(&self, num_bytes: usize) -> io::Result<()> {
         let _guard = self.check_if_alive()?;
-        self.throughput_limiter.blocking_consume(num_bytes);
+        if let Some(throughput_limiter) = &self.throughput_limiter_opt {
+            throughput_limiter.blocking_consume(num_bytes);
+        }
         self.bytes_counter.inc_by(num_bytes as u64);
         Ok(())
     }
@@ -212,9 +224,12 @@ impl<A: IoControlsAccess, W: AsyncWrite> ControlledWrite<A, W> {
             if len > 0 {
                 let waiter = this.io_controls_access.apply(|io_controls| {
                     io_controls.bytes_counter.inc_by(len as u64);
-                    io_controls.throughput_limiter.consume(len)
+                    io_controls
+                        .throughput_limiter_opt
+                        .as_ref()
+                        .map(|limiter| limiter.consume(len))
                 });
-                *this.waiter = Some(waiter)
+                *this.waiter = waiter
             }
         }
         res
@@ -330,6 +345,7 @@ mod tests {
     use std::io::{IoSlice, Write};
     use std::time::Duration;
 
+    use bytesize::ByteSize;
     use tokio::io::{sink, AsyncWriteExt};
     use tokio::time::Instant;
 
@@ -337,7 +353,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_controlled_writer_limited_async() {
-        let io_controls = IoControls::default().set_throughput_limit(2_000_000f64);
+        let io_controls = IoControls::default().set_throughput_limit(ByteSize::mb(2));
         let mut controlled_write = io_controls.clone().wrap_write(sink());
         let buf = vec![44u8; 1_000];
         let start = Instant::now();
@@ -370,7 +386,7 @@ mod tests {
 
     #[test]
     fn test_controlled_writer_limited_sync() {
-        let io_controls = IoControls::default().set_throughput_limit(2_000_000f64);
+        let io_controls = IoControls::default().set_throughput_limit(ByteSize::mb(2));
         let mut controlled_write = io_controls.clone().wrap_write(std::io::sink());
         let buf = vec![44u8; 1_000];
         let start = Instant::now();
