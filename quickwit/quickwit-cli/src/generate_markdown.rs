@@ -1,21 +1,16 @@
-// Copyright (C) 2024 Quickwit, Inc.
+// Copyright 2021-Present Datadog, Inc.
 //
-// Quickwit is offered under the AGPL v3.0 and as commercial software.
-// For commercial licensing, contact us at hello@quickwit.io.
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
 //
-// AGPL:
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as
-// published by the Free Software Foundation, either version 3 of the
-// License, or (at your option) any later version.
+//     http://www.apache.org/licenses/LICENSE-2.0
 //
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program. If not, see <http://www.gnu.org/licenses/>.
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 use clap::Command;
 use quickwit_cli::cli::build_cli;
@@ -24,11 +19,7 @@ use toml::Value;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let build_info = BuildInfo::get();
-    let version_text = format!(
-        "{} ({} {})",
-        build_info.cargo_pkg_version, build_info.cargo_pkg_version, build_info.commit_date,
-    );
+    let version_text = BuildInfo::get_version_text();
     let app = build_cli()
         .version(version_text)
         .disable_help_subcommand(true);
@@ -47,11 +38,13 @@ fn markdown_for_subcommand(
     subcommand: &Command,
     command_group: Vec<String>,
     doc_extensions: &toml::Value,
+    level: usize,
 ) {
     let subcommand_name = subcommand.get_name();
 
     let command_name = format!("{} {}", command_group.join(" "), subcommand_name);
-    println!("### {command_name}\n");
+    let header_level = "#".repeat(level);
+    println!("{header_level} {command_name}\n");
 
     let subcommand_ext: Option<&Value> = {
         let mut val_opt: Option<&Value> = doc_extensions.get(command_group[0].to_string());
@@ -143,7 +136,7 @@ fn markdown_for_command_helper(
             println!("| Option | Description | Default |");
             println!("|-----------------|-------------|--------:|");
             for arg in arguments {
-                let default = if let Some(val) = arg.get_default_values().get(0) {
+                let default = if let Some(val) = arg.get_default_values().first() {
                     format!("`{}`", val.to_str().unwrap())
                 } else {
                     "".to_string()
@@ -199,20 +192,20 @@ fn generate_markdown_from_clap(command: &Command) {
             continue;
         }
 
-        let excluded_doc_commands = ["merge"];
+        let excluded_doc_commands = ["merge", "local-search"];
         for subcommand in command
             .get_subcommands()
             .filter(|subcommand| !excluded_doc_commands.contains(&subcommand.get_name()))
         {
             let commands = vec![command.get_name().to_string()];
-            markdown_for_subcommand(subcommand, commands, &doc_extensions);
+            markdown_for_subcommand(subcommand, commands, &doc_extensions, 3);
 
             for subsubcommand in subcommand.get_subcommands() {
                 let commands = vec![
                     command.get_name().to_string(),
                     subcommand.get_name().to_string(),
                 ];
-                markdown_for_subcommand(subsubcommand, commands, &doc_extensions);
+                markdown_for_subcommand(subsubcommand, commands, &doc_extensions, 4);
             }
         }
     }

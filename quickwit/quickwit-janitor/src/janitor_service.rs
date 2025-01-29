@@ -1,21 +1,16 @@
-// Copyright (C) 2024 Quickwit, Inc.
+// Copyright 2021-Present Datadog, Inc.
 //
-// Quickwit is offered under the AGPL v3.0 and as commercial software.
-// For commercial licensing, contact us at hello@quickwit.io.
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
 //
-// AGPL:
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as
-// published by the Free Software Foundation, either version 3 of the
-// License, or (at your option) any later version.
+//     http://www.apache.org/licenses/LICENSE-2.0
 //
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program. If not, see <http://www.gnu.org/licenses/>.
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 use async_trait::async_trait;
 use quickwit_actors::{
@@ -26,14 +21,14 @@ use serde_json::{json, Value as JsonValue};
 use crate::actors::{DeleteTaskService, GarbageCollector, RetentionPolicyExecutor};
 
 pub struct JanitorService {
-    delete_task_service_handle: ActorHandle<DeleteTaskService>,
+    delete_task_service_handle: Option<ActorHandle<DeleteTaskService>>,
     garbage_collector_handle: ActorHandle<GarbageCollector>,
     retention_policy_executor_handle: ActorHandle<RetentionPolicyExecutor>,
 }
 
 impl JanitorService {
     pub fn new(
-        delete_task_service_handle: ActorHandle<DeleteTaskService>,
+        delete_task_service_handle: Option<ActorHandle<DeleteTaskService>>,
         garbage_collector_handle: ActorHandle<GarbageCollector>,
         retention_policy_executor_handle: ActorHandle<RetentionPolicyExecutor>,
     ) -> Self {
@@ -45,7 +40,11 @@ impl JanitorService {
     }
 
     fn is_healthy(&self) -> bool {
-        self.delete_task_service_handle.state() != ActorState::Failure
+        self.delete_task_service_handle
+            .as_ref()
+            .map_or(true, |delete_task_service_handle| {
+                delete_task_service_handle.state() != ActorState::Failure
+            })
             && self.garbage_collector_handle.state() != ActorState::Failure
             && self.retention_policy_executor_handle.state() != ActorState::Failure
     }

@@ -1,21 +1,16 @@
-// Copyright (C) 2024 Quickwit, Inc.
+// Copyright 2021-Present Datadog, Inc.
 //
-// Quickwit is offered under the AGPL v3.0 and as commercial software.
-// For commercial licensing, contact us at hello@quickwit.io.
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
 //
-// AGPL:
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as
-// published by the Free Software Foundation, either version 3 of the
-// License, or (at your option) any later version.
+//     http://www.apache.org/licenses/LICENSE-2.0
 //
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program. If not, see <http://www.gnu.org/licenses/>.
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 use anyhow::Context;
 use async_trait::async_trait;
@@ -50,6 +45,11 @@ impl PublisherType {
         }
     }
 }
+
+/// Disconnect the merge planner loop back.
+/// This message is used to cut the merge pipeline loop, and let it terminate.
+#[derive(Debug)]
+pub(crate) struct DisconnectMergePlanner;
 
 #[derive(Clone)]
 pub struct Publisher {
@@ -98,6 +98,21 @@ impl Actor for Publisher {
 }
 
 #[async_trait]
+impl Handler<DisconnectMergePlanner> for Publisher {
+    type Reply = ();
+
+    async fn handle(
+        &mut self,
+        _: DisconnectMergePlanner,
+        _ctx: &ActorContext<Self>,
+    ) -> Result<(), quickwit_actors::ActorExitStatus> {
+        info!("disconnecting merge planner mailbox");
+        self.merge_planner_mailbox_opt = None;
+        Ok(())
+    }
+}
+
+#[async_trait]
 impl Handler<SplitsUpdate> for Publisher {
     type Reply = ();
 
@@ -130,7 +145,7 @@ impl Handler<SplitsUpdate> for Publisher {
             .collect();
         if let Some(_guard) = publish_lock.acquire().await {
             let publish_splits_request = PublishSplitsRequest {
-                index_uid: index_uid.to_string(),
+                index_uid: Some(index_uid),
                 staged_split_ids: split_ids.clone(),
                 replaced_split_ids: replaced_split_ids.clone(),
                 index_checkpoint_delta_json_opt,
@@ -147,7 +162,7 @@ impl Handler<SplitsUpdate> for Publisher {
             );
             return Ok(());
         }
-        info!(new_splits=?split_ids, checkpoint_delta=?checkpoint_delta_opt, "publish-new-splits");
+        info!("publish-new-splits");
         if let Some(source_mailbox) = self.source_mailbox_opt.as_ref() {
             if let Some(checkpoint) = checkpoint_delta_opt {
                 // We voluntarily do not log anything here.
@@ -199,7 +214,7 @@ mod tests {
         IndexCheckpointDelta, PartitionId, SourceCheckpoint, SourceCheckpointDelta,
     };
     use quickwit_metastore::{PublishSplitsRequestExt, SplitMetadata};
-    use quickwit_proto::metastore::EmptyResponse;
+    use quickwit_proto::metastore::{EmptyResponse, MockMetastoreService};
     use quickwit_proto::types::{IndexUid, Position};
     use tracing::Span;
 
@@ -209,15 +224,17 @@ mod tests {
     #[tokio::test]
     async fn test_publisher_publish_operation() {
         let universe = Universe::with_accelerated_time();
-        let mut mock_metastore = MetastoreServiceClient::mock();
+        let ref_index_uid: IndexUid = IndexUid::for_test("index", 1);
+        let mut mock_metastore = MockMetastoreService::new();
+        let ref_index_uid_clone = ref_index_uid.clone();
         mock_metastore
             .expect_publish_splits()
-            .withf(|publish_splits_request| {
+            .withf(move |publish_splits_request| {
                 let checkpoint_delta: IndexCheckpointDelta = publish_splits_request
                     .deserialize_index_checkpoint()
                     .unwrap()
                     .unwrap();
-                publish_splits_request.index_uid == "index:11111111111111111111111111"
+                publish_splits_request.index_uid() == &ref_index_uid_clone
                     && checkpoint_delta.source_id == "source"
                     && publish_splits_request.staged_split_ids[..] == ["split"]
                     && publish_splits_request.replaced_split_ids.is_empty()
@@ -231,7 +248,7 @@ mod tests {
 
         let publisher = Publisher::new(
             PublisherType::MainPublisher,
-            MetastoreServiceClient::from(mock_metastore),
+            MetastoreServiceClient::from_mock(mock_metastore),
             Some(merge_planner_mailbox),
             Some(source_mailbox),
         );
@@ -239,7 +256,7 @@ mod tests {
 
         assert!(publisher_mailbox
             .send_message(SplitsUpdate {
-                index_uid: "index:11111111111111111111111111".to_string().into(),
+                index_uid: ref_index_uid.clone(),
                 new_splits: vec![SplitMetadata {
                     split_id: "split".to_string(),
                     ..Default::default()
@@ -251,7 +268,7 @@ mod tests {
                 }),
                 publish_lock: PublishLock::default(),
                 publish_token_opt: None,
-                merge_operation: None,
+                merge_task: None,
                 parent_span: tracing::Span::none(),
             })
             .await
@@ -283,15 +300,17 @@ mod tests {
     #[tokio::test]
     async fn test_publisher_publish_operation_with_empty_splits() {
         let universe = Universe::with_accelerated_time();
-        let mut mock_metastore = MetastoreServiceClient::mock();
+        let ref_index_uid: IndexUid = IndexUid::for_test("index", 1);
+        let mut mock_metastore = MockMetastoreService::new();
+        let ref_index_uid_clone = ref_index_uid.clone();
         mock_metastore
             .expect_publish_splits()
-            .withf(|publish_splits_request| {
+            .withf(move |publish_splits_request| {
                 let checkpoint_delta: IndexCheckpointDelta = publish_splits_request
                     .deserialize_index_checkpoint()
                     .unwrap()
                     .unwrap();
-                publish_splits_request.index_uid == "index:11111111111111111111111111"
+                publish_splits_request.index_uid() == &ref_index_uid_clone
                     && checkpoint_delta.source_id == "source"
                     && publish_splits_request.staged_split_ids.is_empty()
                     && publish_splits_request.replaced_split_ids.is_empty()
@@ -305,7 +324,7 @@ mod tests {
 
         let publisher = Publisher::new(
             PublisherType::MainPublisher,
-            MetastoreServiceClient::from(mock_metastore),
+            MetastoreServiceClient::from_mock(mock_metastore),
             Some(merge_planner_mailbox),
             Some(source_mailbox),
         );
@@ -313,7 +332,7 @@ mod tests {
 
         assert!(publisher_mailbox
             .send_message(SplitsUpdate {
-                index_uid: "index:11111111111111111111111111".to_string().into(),
+                index_uid: ref_index_uid.clone(),
                 new_splits: Vec::new(),
                 replaced_split_ids: Vec::new(),
                 checkpoint_delta_opt: Some(IndexCheckpointDelta {
@@ -322,7 +341,7 @@ mod tests {
                 }),
                 publish_lock: PublishLock::default(),
                 publish_token_opt: None,
-                merge_operation: None,
+                merge_task: None,
                 parent_span: tracing::Span::none(),
             })
             .await
@@ -355,11 +374,13 @@ mod tests {
     #[tokio::test]
     async fn test_publisher_replace_operation() {
         let universe = Universe::with_accelerated_time();
-        let mut mock_metastore = MetastoreServiceClient::mock();
+        let mut mock_metastore = MockMetastoreService::new();
+        let ref_index_uid: IndexUid = IndexUid::for_test("index", 1);
+        let ref_index_uid_clone = ref_index_uid.clone();
         mock_metastore
             .expect_publish_splits()
-            .withf(|publish_splits_requests| {
-                publish_splits_requests.index_uid == "index:11111111111111111111111111"
+            .withf(move |publish_splits_requests| {
+                publish_splits_requests.index_uid() == &ref_index_uid_clone
                     && publish_splits_requests.staged_split_ids[..] == ["split3"]
                     && publish_splits_requests.replaced_split_ids[..] == ["split1", "split2"]
                     && publish_splits_requests
@@ -371,13 +392,13 @@ mod tests {
         let (merge_planner_mailbox, merge_planner_inbox) = universe.create_test_mailbox();
         let publisher = Publisher::new(
             PublisherType::MainPublisher,
-            MetastoreServiceClient::from(mock_metastore),
+            MetastoreServiceClient::from_mock(mock_metastore),
             Some(merge_planner_mailbox),
             None,
         );
         let (publisher_mailbox, publisher_handle) = universe.spawn_builder().spawn(publisher);
         let publisher_message = SplitsUpdate {
-            index_uid: "index:11111111111111111111111111".to_string().into(),
+            index_uid: ref_index_uid.clone(),
             new_splits: vec![SplitMetadata {
                 split_id: "split3".to_string(),
                 ..Default::default()
@@ -386,7 +407,7 @@ mod tests {
             checkpoint_delta_opt: None,
             publish_lock: PublishLock::default(),
             publish_token_opt: None,
-            merge_operation: None,
+            merge_task: None,
             parent_span: Span::none(),
         };
         assert!(publisher_mailbox
@@ -405,13 +426,13 @@ mod tests {
     #[tokio::test]
     async fn publisher_acquires_publish_lock() {
         let universe = Universe::with_accelerated_time();
-        let mut mock_metastore = MetastoreServiceClient::mock();
+        let mut mock_metastore = MockMetastoreService::new();
         mock_metastore.expect_publish_splits().never();
         let (merge_planner_mailbox, merge_planner_inbox) = universe.create_test_mailbox();
 
         let publisher = Publisher::new(
             PublisherType::MainPublisher,
-            MetastoreServiceClient::from(mock_metastore),
+            MetastoreServiceClient::from_mock(mock_metastore),
             Some(merge_planner_mailbox),
             None,
         );
@@ -428,7 +449,7 @@ mod tests {
                 checkpoint_delta_opt: None,
                 publish_lock,
                 publish_token_opt: None,
-                merge_operation: None,
+                merge_task: None,
                 parent_span: Span::none(),
             })
             .await
